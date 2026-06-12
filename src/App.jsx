@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Bot, Crown, RefreshCcw, Sparkles, Users } from "lucide-react";
 
 const BOARD_SIZE = 8;
-const STORAGE_KEY = "checkers-game-state-v2";
+const STORAGE_KEY = "checkers-game-session-v3";
 const DEFAULT_BOT_DIFFICULTY = "smart";
 const DEFAULT_HUMAN_PLAYER = "red";
 const WIN_SCORE = 100000;
@@ -89,6 +89,13 @@ function createInitialGame(
     winner: null,
     lastMove: null,
     forcedCapture: null,
+  };
+}
+
+function createInitialSession() {
+  return {
+    game: createInitialGame("bot", DEFAULT_BOT_DIFFICULTY, DEFAULT_HUMAN_PLAYER),
+    gameStarted: false,
   };
 }
 
@@ -586,7 +593,37 @@ function getBestBotMove(game, perspectivePlayer) {
   return chooseRandomMove(bestMoves);
 }
 
-function loadSavedGame() {
+function hasValidGameShape(game) {
+  return (
+    Array.isArray(game?.board) &&
+    game.board.length === BOARD_SIZE &&
+    ["red", "black"].includes(game.turn) &&
+    ["bot", "pvp"].includes(game.mode) &&
+    game.captured &&
+    typeof game.captured.red === "number" &&
+    typeof game.captured.black === "number"
+  );
+}
+
+function hydrateSavedGame(game) {
+  if (!hasValidGameShape(game)) return null;
+
+  return {
+    ...createInitialGame(game.mode),
+    ...game,
+    botDifficulty: BOT_DIFFICULTIES[game.botDifficulty]
+      ? game.botDifficulty
+      : DEFAULT_BOT_DIFFICULTY,
+    humanPlayer: ["red", "black"].includes(game.humanPlayer)
+      ? game.humanPlayer
+      : DEFAULT_HUMAN_PLAYER,
+    forcedCapture: game.forcedCapture || null,
+    winner: game.winner || null,
+    lastMove: game.lastMove || null,
+  };
+}
+
+function loadSavedSession() {
   if (typeof window === "undefined") return null;
 
   try {
@@ -594,38 +631,22 @@ function loadSavedGame() {
     if (!saved) return null;
 
     const parsed = JSON.parse(saved);
-    const hasValidShape =
-      Array.isArray(parsed?.board) &&
-      parsed.board.length === BOARD_SIZE &&
-      ["red", "black"].includes(parsed.turn) &&
-      ["bot", "pvp"].includes(parsed.mode) &&
-      parsed.captured &&
-      typeof parsed.captured.red === "number" &&
-      typeof parsed.captured.black === "number";
+    const savedGame = hydrateSavedGame(parsed.game || parsed);
 
-    if (!hasValidShape) return null;
+    if (!savedGame) return null;
 
     return {
-      ...createInitialGame(parsed.mode),
-      ...parsed,
-      botDifficulty: BOT_DIFFICULTIES[parsed.botDifficulty]
-        ? parsed.botDifficulty
-        : DEFAULT_BOT_DIFFICULTY,
-      humanPlayer: ["red", "black"].includes(parsed.humanPlayer)
-        ? parsed.humanPlayer
-        : DEFAULT_HUMAN_PLAYER,
-      forcedCapture: parsed.forcedCapture || null,
-      winner: parsed.winner || null,
-      lastMove: parsed.lastMove || null,
+      game: savedGame,
+      gameStarted: Boolean(parsed.gameStarted),
     };
   } catch {
     return null;
   }
 }
 
-function saveGame(game) {
+function saveSession(game, gameStarted) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ game, gameStarted }));
 }
 
 function squareLabel(row, col) {
@@ -633,7 +654,9 @@ function squareLabel(row, col) {
 }
 
 export default function App() {
-  const [game, setGame] = useState(() => loadSavedGame() || createInitialGame("bot"));
+  const [initialSession] = useState(() => loadSavedSession() || createInitialSession());
+  const [game, setGame] = useState(initialSession.game);
+  const [gameStarted, setGameStarted] = useState(initialSession.gameStarted);
   const [selectedSquare, setSelectedSquare] = useState(null);
   const [botThinking, setBotThinking] = useState(false);
 
@@ -659,11 +682,11 @@ export default function App() {
   const jumpIsMandatory = currentMoves.some((move) => move.isJump);
   const botPlayer = getBotPlayer(game);
   const humanPlayer = game.humanPlayer || DEFAULT_HUMAN_PLAYER;
-  const isBotTurn = game.mode === "bot" && game.turn === botPlayer && !game.winner;
+  const isBotTurn = gameStarted && game.mode === "bot" && game.turn === botPlayer && !game.winner;
 
   useEffect(() => {
-    saveGame(game);
-  }, [game]);
+    saveSession(game, gameStarted);
+  }, [game, gameStarted]);
 
   useEffect(() => {
     if (!isBotTurn) {
@@ -705,28 +728,51 @@ export default function App() {
     return selectedMoves.find((move) => move.to.row === row && move.to.col === col);
   }
 
-  function resetGame(nextMode = game.mode) {
+  function startGame() {
     setSelectedSquare(null);
     setBotThinking(false);
-    setGame(
+    setGame((currentGame) =>
       createInitialGame(
-        nextMode,
-        game.botDifficulty || DEFAULT_BOT_DIFFICULTY,
-        game.humanPlayer || DEFAULT_HUMAN_PLAYER,
+        currentGame.mode,
+        currentGame.botDifficulty || DEFAULT_BOT_DIFFICULTY,
+        currentGame.humanPlayer || DEFAULT_HUMAN_PLAYER,
       ),
     );
+    setGameStarted(true);
+  }
+
+  function resetGame() {
+    setSelectedSquare(null);
+    setBotThinking(false);
+    setGame((currentGame) =>
+      createInitialGame(
+        currentGame.mode,
+        currentGame.botDifficulty || DEFAULT_BOT_DIFFICULTY,
+        currentGame.humanPlayer || DEFAULT_HUMAN_PLAYER,
+      ),
+    );
+    setGameStarted(false);
   }
 
   function setMode(mode) {
     setSelectedSquare(null);
-    setGame((currentGame) => ({ ...currentGame, mode }));
+    setGame((currentGame) =>
+      createInitialGame(
+        mode,
+        currentGame.botDifficulty || DEFAULT_BOT_DIFFICULTY,
+        currentGame.humanPlayer || DEFAULT_HUMAN_PLAYER,
+      ),
+    );
   }
 
   function setBotDifficulty(botDifficulty) {
-    setGame((currentGame) => ({
-      ...currentGame,
-      botDifficulty,
-    }));
+    setGame((currentGame) =>
+      createInitialGame(
+        currentGame.mode,
+        botDifficulty,
+        currentGame.humanPlayer || DEFAULT_HUMAN_PLAYER,
+      ),
+    );
   }
 
   function setHumanPlayer(humanPlayer) {
@@ -742,7 +788,7 @@ export default function App() {
   }
 
   function handleSquareClick(row, col) {
-    if (game.winner || isBotTurn || botThinking) return;
+    if (!gameStarted || game.winner || isBotTurn || botThinking) return;
 
     const selectedMove = getMoveForDestination(row, col);
     if (selectedMove) {
@@ -801,6 +847,139 @@ export default function App() {
             ? `${botSideLabel} bot's turn`
             : `${PLAYERS[game.turn].label}'s turn`;
 
+  if (!gameStarted) {
+    return (
+      <div className="min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.14),transparent_30%),linear-gradient(135deg,#09090b_0%,#18181b_44%,#111827_100%)] px-4 py-6 text-zinc-100 sm:px-6 lg:py-10">
+        <main className="mx-auto grid min-h-[calc(100vh-5rem)] w-full max-w-5xl items-center">
+          <section className="rounded-lg border border-white/10 bg-zinc-950/78 p-5 shadow-2xl shadow-black/45 backdrop-blur md:p-8">
+            <div className="flex flex-col gap-6">
+              <div>
+                <div className="flex items-center gap-2 text-emerald-300">
+                  <Sparkles className="h-4 w-4" />
+                  <span className="text-xs font-semibold uppercase tracking-[0.22em]">
+                    Forest Board
+                  </span>
+                </div>
+                <h1 className="mt-2 text-4xl font-semibold tracking-normal text-white sm:text-5xl">
+                  Checkers
+                </h1>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
+                <section className="rounded-lg border border-white/10 bg-white/[0.04] p-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Mode</p>
+                  <div className="mt-3 grid grid-cols-2 rounded-lg border border-white/10 bg-zinc-900 p-1">
+                    <button
+                      type="button"
+                      onClick={() => setMode("pvp")}
+                      className={[
+                        "inline-flex h-12 items-center justify-center gap-2 rounded-md px-3 text-sm font-semibold transition",
+                        game.mode === "pvp"
+                          ? "bg-emerald-500 text-emerald-950 shadow-lg shadow-emerald-950/30"
+                          : "text-zinc-300 hover:bg-white/5 hover:text-white",
+                      ].join(" ")}
+                    >
+                      <Users className="h-4 w-4" />
+                      PvP
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMode("bot")}
+                      className={[
+                        "inline-flex h-12 items-center justify-center gap-2 rounded-md px-3 text-sm font-semibold transition",
+                        game.mode === "bot"
+                          ? "bg-emerald-500 text-emerald-950 shadow-lg shadow-emerald-950/30"
+                          : "text-zinc-300 hover:bg-white/5 hover:text-white",
+                      ].join(" ")}
+                    >
+                      <Bot className="h-4 w-4" />
+                      Bot
+                    </button>
+                  </div>
+                </section>
+
+                {game.mode === "bot" && (
+                  <section className="rounded-lg border border-white/10 bg-white/[0.04] p-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Side</p>
+                    <div className="mt-3 grid grid-cols-2 rounded-lg border border-white/10 bg-zinc-900 p-1">
+                      <button
+                        type="button"
+                        onClick={() => setHumanPlayer("red")}
+                        className={[
+                          "inline-flex h-12 items-center justify-center rounded-md px-3 text-sm font-semibold transition",
+                          humanPlayer === "red"
+                            ? "bg-red-400 text-red-950 shadow-lg shadow-red-950/25"
+                            : "text-zinc-300 hover:bg-white/5 hover:text-white",
+                        ].join(" ")}
+                      >
+                        Red First
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHumanPlayer("black")}
+                        className={[
+                          "inline-flex h-12 items-center justify-center rounded-md px-3 text-sm font-semibold transition",
+                          humanPlayer === "black"
+                            ? "bg-zinc-200 text-zinc-950 shadow-lg shadow-black/25"
+                            : "text-zinc-300 hover:bg-white/5 hover:text-white",
+                        ].join(" ")}
+                      >
+                        Black Second
+                      </button>
+                    </div>
+                  </section>
+                )}
+
+                {game.mode === "bot" && (
+                  <section className="rounded-lg border border-white/10 bg-white/[0.04] p-4 lg:col-span-2">
+                    <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Bot Skill</p>
+                    <div className="mt-3 grid grid-cols-3 rounded-lg border border-white/10 bg-zinc-900 p-1">
+                      {Object.entries(BOT_DIFFICULTIES).map(([difficultyKey, difficulty]) => (
+                        <button
+                          type="button"
+                          key={difficultyKey}
+                          onClick={() => setBotDifficulty(difficultyKey)}
+                          className={[
+                            "inline-flex h-12 items-center justify-center rounded-md px-3 text-sm font-semibold transition",
+                            game.botDifficulty === difficultyKey
+                              ? "bg-amber-300 text-zinc-950 shadow-lg shadow-amber-950/20"
+                              : "text-zinc-300 hover:bg-white/5 hover:text-white",
+                          ].join(" ")}
+                        >
+                          {difficulty.label}
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-center">
+                <div className="rounded-lg border border-white/10 bg-white/[0.04] px-4 py-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Setup</p>
+                  <p className="mt-1 text-sm font-semibold text-white">
+                    {game.mode === "pvp"
+                      ? "Player vs Player"
+                      : `You: ${playerSideLabel} / Bot: ${botSideLabel} / ${botDifficulty.label}`}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={startGame}
+                  className="inline-flex h-14 items-center justify-center gap-2 rounded-lg bg-emerald-400 px-6 text-sm font-bold text-emerald-950 shadow-xl shadow-emerald-950/30 transition hover:bg-emerald-300 focus:outline-none focus:ring-2 focus:ring-emerald-100"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  Start Game
+                </button>
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.14),transparent_30%),linear-gradient(135deg,#09090b_0%,#18181b_44%,#111827_100%)] px-4 py-5 text-zinc-100 sm:px-6 lg:py-8">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-5">
@@ -819,7 +998,7 @@ export default function App() {
               <p className="mt-1 text-sm text-zinc-400">{statusText}</p>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[auto_auto_auto_auto_auto_auto] xl:items-center">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[auto_auto_auto_auto_auto] xl:items-center">
               <section className="rounded-lg border border-white/10 bg-white/[0.04] px-4 py-3">
                 <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Current Turn</p>
                 <p className="mt-1 text-lg font-semibold text-white">
@@ -834,82 +1013,26 @@ export default function App() {
                 </p>
               </section>
 
-              <div className="grid grid-cols-2 rounded-lg border border-white/10 bg-zinc-900 p-1">
-                <button
-                  type="button"
-                  onClick={() => setMode("pvp")}
-                  className={[
-                    "inline-flex h-11 items-center justify-center gap-2 rounded-md px-3 text-sm font-semibold transition",
-                    game.mode === "pvp"
-                      ? "bg-emerald-500 text-emerald-950 shadow-lg shadow-emerald-950/30"
-                      : "text-zinc-300 hover:bg-white/5 hover:text-white",
-                  ].join(" ")}
-                >
-                  <Users className="h-4 w-4" />
-                  PvP
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode("bot")}
-                  className={[
-                    "inline-flex h-11 items-center justify-center gap-2 rounded-md px-3 text-sm font-semibold transition",
-                    game.mode === "bot"
-                      ? "bg-emerald-500 text-emerald-950 shadow-lg shadow-emerald-950/30"
-                      : "text-zinc-300 hover:bg-white/5 hover:text-white",
-                  ].join(" ")}
-                >
-                  <Bot className="h-4 w-4" />
-                  Bot
-                </button>
-              </div>
+              <section className="rounded-lg border border-white/10 bg-white/[0.04] px-4 py-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Mode</p>
+                <p className="mt-1 inline-flex items-center gap-2 text-lg font-semibold text-white">
+                  {game.mode === "bot" ? <Bot className="h-4 w-4" /> : <Users className="h-4 w-4" />}
+                  {game.mode === "bot" ? "Bot" : "PvP"}
+                </p>
+              </section>
 
               {game.mode === "bot" && (
-                <div className="grid grid-cols-2 rounded-lg border border-white/10 bg-zinc-900 p-1">
-                  <button
-                    type="button"
-                    onClick={() => setHumanPlayer("red")}
-                    className={[
-                      "inline-flex h-11 items-center justify-center rounded-md px-3 text-sm font-semibold transition",
-                      humanPlayer === "red"
-                        ? "bg-red-400 text-red-950 shadow-lg shadow-red-950/25"
-                        : "text-zinc-300 hover:bg-white/5 hover:text-white",
-                    ].join(" ")}
-                  >
-                    Red First
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setHumanPlayer("black")}
-                    className={[
-                      "inline-flex h-11 items-center justify-center rounded-md px-3 text-sm font-semibold transition",
-                      humanPlayer === "black"
-                        ? "bg-zinc-200 text-zinc-950 shadow-lg shadow-black/25"
-                        : "text-zinc-300 hover:bg-white/5 hover:text-white",
-                    ].join(" ")}
-                  >
-                    Black Second
-                  </button>
-                </div>
+                <section className="rounded-lg border border-white/10 bg-white/[0.04] px-4 py-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Side</p>
+                  <p className="mt-1 text-lg font-semibold text-white">{playerSideLabel}</p>
+                </section>
               )}
 
               {game.mode === "bot" && (
-                <div className="grid grid-cols-3 rounded-lg border border-white/10 bg-zinc-900 p-1">
-                  {Object.entries(BOT_DIFFICULTIES).map(([difficultyKey, difficulty]) => (
-                    <button
-                      type="button"
-                      key={difficultyKey}
-                      onClick={() => setBotDifficulty(difficultyKey)}
-                      className={[
-                        "inline-flex h-11 items-center justify-center rounded-md px-3 text-sm font-semibold transition",
-                        game.botDifficulty === difficultyKey
-                          ? "bg-amber-300 text-zinc-950 shadow-lg shadow-amber-950/20"
-                          : "text-zinc-300 hover:bg-white/5 hover:text-white",
-                      ].join(" ")}
-                    >
-                      {difficulty.label}
-                    </button>
-                  ))}
-                </div>
+                <section className="rounded-lg border border-white/10 bg-white/[0.04] px-4 py-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Bot Skill</p>
+                  <p className="mt-1 text-lg font-semibold text-amber-200">{botDifficulty.label}</p>
+                </section>
               )}
 
               <button
