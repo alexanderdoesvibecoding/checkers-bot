@@ -2,9 +2,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Bot, Crown, RefreshCcw, Sparkles, Users } from "lucide-react";
 
 const BOARD_SIZE = 8;
-const STORAGE_KEY = "checkers-game-state-v1";
-const AI_PLAYER = "black";
+const STORAGE_KEY = "checkers-game-state-v2";
 const DEFAULT_BOT_DIFFICULTY = "smart";
+const DEFAULT_HUMAN_PLAYER = "red";
 const WIN_SCORE = 100000;
 
 const BOT_DIFFICULTIES = {
@@ -25,9 +25,9 @@ const BOT_DIFFICULTIES = {
 const PLAYERS = {
   red: {
     label: "Red",
-    direction: 1,
-    homeRows: [0, 1, 2],
-    promotionRow: 7,
+    direction: -1,
+    homeRows: [5, 6, 7],
+    promotionRow: 0,
     pieceClass:
       "border-red-200/80 bg-[radial-gradient(circle_at_35%_25%,#fecaca_0%,#ef4444_28%,#991b1b_78%)] shadow-piece-red",
     ringClass: "ring-red-200/70",
@@ -35,9 +35,9 @@ const PLAYERS = {
   },
   black: {
     label: "Black",
-    direction: -1,
-    homeRows: [5, 6, 7],
-    promotionRow: 0,
+    direction: 1,
+    homeRows: [0, 1, 2],
+    promotionRow: 7,
     pieceClass:
       "border-zinc-300/45 bg-[radial-gradient(circle_at_35%_25%,#71717a_0%,#18181b_36%,#020617_84%)] shadow-piece-black",
     ringClass: "ring-zinc-300/60",
@@ -71,12 +71,17 @@ function createPiece(player, row, col) {
   };
 }
 
-function createInitialGame(mode = "bot", botDifficulty = DEFAULT_BOT_DIFFICULTY) {
+function createInitialGame(
+  mode = "bot",
+  botDifficulty = DEFAULT_BOT_DIFFICULTY,
+  humanPlayer = DEFAULT_HUMAN_PLAYER,
+) {
   return {
     board: createInitialBoard(),
     turn: "red",
     mode,
     botDifficulty,
+    humanPlayer,
     captured: {
       red: 0,
       black: 0,
@@ -101,6 +106,10 @@ function isDarkSquare(row, col) {
 
 function getOpponent(player) {
   return player === "red" ? "black" : "red";
+}
+
+function getBotPlayer(game) {
+  return getOpponent(game.humanPlayer || DEFAULT_HUMAN_PLAYER);
 }
 
 function getMoveDirections(piece) {
@@ -265,7 +274,7 @@ function getCenterControlBonus(row, col) {
 
 function getAdvancementBonus(piece, row) {
   if (piece.king) return 0;
-  return piece.player === "red" ? row * 6 : (BOARD_SIZE - 1 - row) * 6;
+  return (BOARD_SIZE - 1 - getDistanceToPromotion(piece, row)) * 6;
 }
 
 function getFriendlyNeighborCount(board, row, col, piece) {
@@ -341,7 +350,7 @@ function getPieceEvaluation(board, row, col, piece) {
       score += (3 - distanceToPromotion) * 18;
     }
 
-    const backRow = piece.player === "red" ? 0 : BOARD_SIZE - 1;
+    const backRow = piece.player === "red" ? BOARD_SIZE - 1 : 0;
     if (row === backRow) {
       score += 6;
     }
@@ -547,7 +556,7 @@ function minimax(game, depth, alpha, beta, perspectivePlayer) {
   return bestScore;
 }
 
-function getBestBotMove(game, perspectivePlayer = AI_PLAYER) {
+function getBestBotMove(game, perspectivePlayer) {
   const difficulty = BOT_DIFFICULTIES[game.botDifficulty] || BOT_DIFFICULTIES[DEFAULT_BOT_DIFFICULTY];
   const legalMoves = getAllLegalMoves(game.board, game.turn, game.forcedCapture);
 
@@ -602,6 +611,9 @@ function loadSavedGame() {
       botDifficulty: BOT_DIFFICULTIES[parsed.botDifficulty]
         ? parsed.botDifficulty
         : DEFAULT_BOT_DIFFICULTY,
+      humanPlayer: ["red", "black"].includes(parsed.humanPlayer)
+        ? parsed.humanPlayer
+        : DEFAULT_HUMAN_PLAYER,
       forcedCapture: parsed.forcedCapture || null,
       winner: parsed.winner || null,
       lastMove: parsed.lastMove || null,
@@ -645,7 +657,9 @@ export default function App() {
   const pieces = useMemo(() => getPieces(game.board), [game.board]);
   const pieceCounts = useMemo(() => countPieces(game.board), [game.board]);
   const jumpIsMandatory = currentMoves.some((move) => move.isJump);
-  const isBotTurn = game.mode === "bot" && game.turn === "black" && !game.winner;
+  const botPlayer = getBotPlayer(game);
+  const humanPlayer = game.humanPlayer || DEFAULT_HUMAN_PLAYER;
+  const isBotTurn = game.mode === "bot" && game.turn === botPlayer && !game.winner;
 
   useEffect(() => {
     saveGame(game);
@@ -662,13 +676,15 @@ export default function App() {
 
     const timer = window.setTimeout(() => {
       setGame((currentGame) => {
-        if (currentGame.mode !== "bot" || currentGame.turn !== "black" || currentGame.winner) {
+        const currentBotPlayer = getBotPlayer(currentGame);
+
+        if (currentGame.mode !== "bot" || currentGame.turn !== currentBotPlayer || currentGame.winner) {
           return currentGame;
         }
 
-        const botMove = getBestBotMove(currentGame, AI_PLAYER);
+        const botMove = getBestBotMove(currentGame, currentBotPlayer);
         if (!botMove) {
-          return { ...currentGame, winner: "red", forcedCapture: null };
+          return { ...currentGame, winner: getOpponent(currentGame.turn), forcedCapture: null };
         }
 
         return applyMove(currentGame, botMove);
@@ -678,7 +694,7 @@ export default function App() {
     }, 800);
 
     return () => window.clearTimeout(timer);
-  }, [isBotTurn, game.board, game.botDifficulty, game.forcedCapture]);
+  }, [isBotTurn, game.board, game.botDifficulty, game.forcedCapture, game.humanPlayer]);
 
   useEffect(() => {
     if (!game.forcedCapture || game.winner || isBotTurn) return;
@@ -692,7 +708,13 @@ export default function App() {
   function resetGame(nextMode = game.mode) {
     setSelectedSquare(null);
     setBotThinking(false);
-    setGame(createInitialGame(nextMode, game.botDifficulty || DEFAULT_BOT_DIFFICULTY));
+    setGame(
+      createInitialGame(
+        nextMode,
+        game.botDifficulty || DEFAULT_BOT_DIFFICULTY,
+        game.humanPlayer || DEFAULT_HUMAN_PLAYER,
+      ),
+    );
   }
 
   function setMode(mode) {
@@ -705,6 +727,18 @@ export default function App() {
       ...currentGame,
       botDifficulty,
     }));
+  }
+
+  function setHumanPlayer(humanPlayer) {
+    setSelectedSquare(null);
+    setBotThinking(false);
+    setGame((currentGame) =>
+      createInitialGame(
+        "bot",
+        currentGame.botDifficulty || DEFAULT_BOT_DIFFICULTY,
+        humanPlayer,
+      ),
+    );
   }
 
   function handleSquareClick(row, col) {
@@ -753,13 +787,19 @@ export default function App() {
   }
 
   const botDifficulty = BOT_DIFFICULTIES[game.botDifficulty] || BOT_DIFFICULTIES[DEFAULT_BOT_DIFFICULTY];
+  const playerSideLabel = PLAYERS[humanPlayer].label;
+  const botSideLabel = PLAYERS[botPlayer].label;
   const statusText = game.winner
     ? `${PLAYERS[game.winner].label} wins`
     : botThinking
-      ? `${botDifficulty.label} bot thinking`
+      ? `${botDifficulty.label} bot thinking as ${botSideLabel}`
       : game.forcedCapture
         ? `${PLAYERS[game.turn].label} must continue jumping`
-        : `${PLAYERS[game.turn].label}'s turn`;
+        : game.mode === "bot" && game.turn === humanPlayer
+          ? `Your turn as ${playerSideLabel}`
+          : game.mode === "bot"
+            ? `${botSideLabel} bot's turn`
+            : `${PLAYERS[game.turn].label}'s turn`;
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.14),transparent_30%),linear-gradient(135deg,#09090b_0%,#18181b_44%,#111827_100%)] px-4 py-5 text-zinc-100 sm:px-6 lg:py-8">
@@ -779,7 +819,7 @@ export default function App() {
               <p className="mt-1 text-sm text-zinc-400">{statusText}</p>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[auto_auto_auto_auto_auto] xl:items-center">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[auto_auto_auto_auto_auto_auto] xl:items-center">
               <section className="rounded-lg border border-white/10 bg-white/[0.04] px-4 py-3">
                 <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Current Turn</p>
                 <p className="mt-1 text-lg font-semibold text-white">
@@ -822,6 +862,35 @@ export default function App() {
                   Bot
                 </button>
               </div>
+
+              {game.mode === "bot" && (
+                <div className="grid grid-cols-2 rounded-lg border border-white/10 bg-zinc-900 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setHumanPlayer("red")}
+                    className={[
+                      "inline-flex h-11 items-center justify-center rounded-md px-3 text-sm font-semibold transition",
+                      humanPlayer === "red"
+                        ? "bg-red-400 text-red-950 shadow-lg shadow-red-950/25"
+                        : "text-zinc-300 hover:bg-white/5 hover:text-white",
+                    ].join(" ")}
+                  >
+                    Red First
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHumanPlayer("black")}
+                    className={[
+                      "inline-flex h-11 items-center justify-center rounded-md px-3 text-sm font-semibold transition",
+                      humanPlayer === "black"
+                        ? "bg-zinc-200 text-zinc-950 shadow-lg shadow-black/25"
+                        : "text-zinc-300 hover:bg-white/5 hover:text-white",
+                    ].join(" ")}
+                  >
+                    Black Second
+                  </button>
+                </div>
+              )}
 
               {game.mode === "bot" && (
                 <div className="grid grid-cols-3 rounded-lg border border-white/10 bg-zinc-900 p-1">
@@ -955,6 +1024,14 @@ export default function App() {
               <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Legal Moves</p>
               <p className="mt-1 text-3xl font-semibold text-emerald-300">{currentMoves.length}</p>
             </section>
+
+            {game.mode === "bot" && (
+              <section className="rounded-lg border border-white/10 bg-white/[0.04] p-4">
+                <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Matchup</p>
+                <p className="mt-1 text-lg font-semibold text-white">You: {playerSideLabel}</p>
+                <p className="mt-1 text-sm text-zinc-400">Bot: {botSideLabel}</p>
+              </section>
+            )}
 
             {game.mode === "bot" && (
               <section className="rounded-lg border border-white/10 bg-white/[0.04] p-4">
